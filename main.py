@@ -26,8 +26,9 @@ async def on_ready():
                 except Exception as e:
                     print(f"cog load error: {f} {e}")
         bot.cogs_loaded = True
+        await bot.sync_commands()  # 初回のみsync
+        print("commands synced")
 
-    await bot.sync_commands()
     print(f"ready: {bot.user}")
 
 
