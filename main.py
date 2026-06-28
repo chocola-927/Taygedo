@@ -25,9 +25,9 @@ async def on_ready():
                     bot.load_extension(f"cogs.{f[:-3]}")
                 except Exception as e:
                     print(f"cog load error: {f} {e}")
+        bot.cogs_loaded = True
 
-        bot.cogs_loaded = True  # 二重ロード防止
-
+    await bot.sync_commands()
     print(f"ready: {bot.user}")
 
 
@@ -43,13 +43,10 @@ async def _notify(error: Exception, ctx=None):
         f"{datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S} UTC",
         f"{type(error).__name__}: {error}",
     ]
-
     if ctx:
         header.append(f"guild={ctx.guild} channel={ctx.channel} user={ctx.user}")
-
     tb = "".join(traceback.format_exception(type(error), error, error.__traceback__))
     msg = "\n".join(header) + "\n```" + tb[:1500] + "```"
-
     try:
         user = await bot.fetch_user(ADMIN_ID)
         await user.send(msg)
