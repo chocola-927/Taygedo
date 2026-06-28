@@ -57,4 +57,5 @@ async def _notify(error: Exception, ctx=None):
 
 
 bot.notify = _notify
+keep_alive()
 bot.run(TOKEN)
