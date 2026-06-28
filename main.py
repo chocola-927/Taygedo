@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 import discord
 from dotenv import load_dotenv
+from keep_alive import keep_alive
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
