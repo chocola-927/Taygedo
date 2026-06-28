@@ -108,11 +108,13 @@ class Logging(commands.Cog):
                        0xE8383D, before.guild, after))
 
         # タイムアウト
-        if not before.timed_out_until and after.timed_out_until:
+        before_timeout = getattr(before, "timed_out_until", None)
+        after_timeout  = getattr(after,  "timed_out_until", None)
+        if not before_timeout and after_timeout:
             await self._send(before.guild, "timeout",
                 _embed(
                     f"{after.mention} がタイムアウトされました\n"
-                    f"解除: {discord.utils.format_dt(after.timed_out_until, 'R')}",
+                    f"解除: {discord.utils.format_dt(after_timeout, 'R')}",
                     0xF0B132, before.guild, after,
                 ))
 
