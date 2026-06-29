@@ -66,29 +66,33 @@ class Logging(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
-        # Kick か Leave かを audit_log で判定
-        kicked = False
+        # moderation.py の /kick コマンドで処理済みの場合はスキップ
+        kicked_users = getattr(self.bot, "_kicked_users", set())
+        if member.id in kicked_users:
+            kicked_users.discard(member.id)
+            return
+
+        # audit_log でBAN/Kickを判定
         try:
             async for entry in member.guild.audit_logs(
                 limit=1, action=discord.AuditLogAction.kick
             ):
                 if entry.target.id == member.id:
-                    kicked = True
                     await self._send(member.guild, "kick",
                         _embed(
                             f"{member.mention} がKickされました\n実行者: {entry.user.mention}",
                             0xE8383D, member.guild, member,
                         ))
+                    return
         except discord.Forbidden:
             pass
 
-        if not kicked:
-            desc = (
-                f"{member.mention} がサーバーから退出しました\n"
-                f"現在のメンバー数: **{member.guild.member_count}**"
-            )
-            await self._send(member.guild, "member_leave",
-                _embed(desc, 0xE8383D, member.guild, member))
+        desc = (
+            f"{member.mention} がサーバーから退出しました\n"
+            f"現在のメンバー数: **{member.guild.member_count}**"
+        )
+        await self._send(member.guild, "member_leave",
+            _embed(desc, 0xE8383D, member.guild, member))
 
     @commands.Cog.listener()
     async def on_member_ban(self, guild: discord.Guild, user: discord.User):
@@ -97,7 +101,6 @@ class Logging(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
-        # ロール変更
         for r in [r for r in after.roles if r not in before.roles]:
             await self._send(before.guild, "role_add",
                 _embed(f"{after.mention} にロール {r.mention} が付与されました",
@@ -107,7 +110,6 @@ class Logging(commands.Cog):
                 _embed(f"{after.mention} からロール {r.mention} が削除されました",
                        0xE8383D, before.guild, after))
 
-        # タイムアウト
         before_timeout = getattr(before, "timed_out_until", None)
         after_timeout  = getattr(after,  "timed_out_until", None)
         if not before_timeout and after_timeout:

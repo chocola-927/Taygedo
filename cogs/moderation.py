@@ -43,11 +43,22 @@ class Moderation(commands.Cog):
     async def kick(self, ctx: discord.ApplicationContext,
                    user: discord.Option(discord.Member, "対象ユーザー"),
                    reason: discord.Option(str, "理由", required=False)):
+        # kick前にuser情報を保持（kick後はguildから消えるため）
+        user_id   = user.id
+        user_name = user.name
+
         await user.kick(reason=reason)
         await ctx.respond(f"{user.mention} をKickしました。", ephemeral=True)
+
+        # logging.py の on_member_remove と二重にならないよう
+        # bot にフラグを立てて logging 側でスキップさせる
+        if not hasattr(self.bot, "_kicked_users"):
+            self.bot._kicked_users = set()
+        self.bot._kicked_users.add(user_id)
+
         await self._log(ctx.guild, "kick",
-            f"{user.mention} がKickされました\n理由: {reason or 'なし'}\n実行者: {ctx.user.mention}",
-            0xE8383D, user)
+            f"<@{user_id}> がKickされました\n理由: {reason or 'なし'}\n実行者: {ctx.user.mention}",
+            0xE8383D, None)
 
     @discord.slash_command(description="ユーザーをタイムアウトします")
     @discord.default_permissions(moderate_members=True)

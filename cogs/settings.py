@@ -18,6 +18,9 @@ LOG_KEYS = {
     "チケット":       "ticket",
 }
 
+# LOG_KEYS の逆引き（value -> label）
+_KEY_TO_LABEL = {v: k for k, v in LOG_KEYS.items()}
+
 
 class Settings(commands.Cog):
     def __init__(self, bot):
@@ -73,7 +76,6 @@ class LogToggleView(discord.ui.View):
     def __init__(self, guild_id: str, options: list):
         super().__init__(timeout=60)
         self.guild_id = guild_id
-        # セレクトを動的に追加
         select = discord.ui.Select(
             placeholder="切り替えるログ種別を選択",
             options=options,
@@ -91,14 +93,8 @@ class LogToggleView(discord.ui.View):
         cfg["logs"] = logs
         utils.save(self.guild_id, "config.json", cfg)
 
-        label_map = {v: k for k, v in {
-            "メッセージ削除": "message_delete", "メッセージ編集": "message_edit",
-            "参加": "member_join", "退出": "member_leave", "BAN": "ban",
-            "Kick": "kick", "タイムアウト": "timeout", "警告": "warn",
-            "ロール付与": "role_add", "ロール削除": "role_remove", "チケット": "ticket",
-        }.items()}
         result = "\n".join(
-            f"{label_map.get(k, k)}: {'ON' if logs.get(k, True) else 'OFF'}"
+            f"{_KEY_TO_LABEL.get(k, k)}: {'ON' if logs.get(k, True) else 'OFF'}"
             for k in interaction.data["values"]
         )
         await interaction.response.edit_message(
