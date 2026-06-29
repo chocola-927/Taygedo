@@ -1,4 +1,4 @@
-import signal, os, traceback
+import os, traceback, signal
 from datetime import datetime, timezone
 import discord
 from dotenv import load_dotenv
@@ -8,7 +8,7 @@ from keep_alive import keep_alive
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
 load_dotenv()
-TOKEN = os.getenv("TOKEN")
+TOKEN    = os.getenv("TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 intents = discord.Intents.default()
@@ -18,22 +18,27 @@ intents.message_content = True
 bot = discord.Bot(intents=intents)
 
 
+# ── cogロード（起動時に一度だけ実行） ────────────────────────────────────────
+
+async def setup_hook():
+    for f in os.listdir("./cogs"):
+        if f.endswith(".py") and not f.startswith("_"):
+            try:
+                bot.load_extension(f"cogs.{f[:-3]}")
+                print(f"cog loaded: {f}")
+            except Exception as e:
+                traceback.print_exc()
+                print(f"cog load error: {f} {e}")
+
+bot.setup_hook = setup_hook
+
+
+# ── イベント ──────────────────────────────────────────────────────────────────
+
 @bot.event
 async def on_ready():
-    if not hasattr(bot, "cogs_loaded"):
-        for f in os.listdir("./cogs"):
-            if f.endswith(".py") and not f.startswith("_"):
-                try:
-                    bot.load_extension(f"cogs.{f[:-3]}")
-                    print(f"cog loaded: {f}")
-                except Exception as e:
-                    traceback.print_exc()
-                    print(f"cog load error: {f} {e}")
-        bot.cogs_loaded = True
-
-        await bot.sync_commands()
-        print("commands synced")
-
+    await bot.sync_commands()
+    print(f"commands synced")
     print(f"ready: {bot.user}")
 
 
@@ -41,8 +46,10 @@ async def on_ready():
 async def on_application_command_error(ctx, error: Exception):
     await _notify(error, ctx=ctx)
     if ctx and not ctx.response.is_done():
-        await ctx.respond("エラー発生", ephemeral=True)
+        await ctx.respond("エラーが発生しました。", ephemeral=True)
 
+
+# ── エラー通知 ────────────────────────────────────────────────────────────────
 
 async def _notify(error: Exception, ctx=None):
     header = [
@@ -51,7 +58,7 @@ async def _notify(error: Exception, ctx=None):
     ]
     if ctx:
         header.append(f"guild={ctx.guild} channel={ctx.channel} user={ctx.user}")
-    tb = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+    tb  = "".join(traceback.format_exception(type(error), error, error.__traceback__))
     msg = "\n".join(header) + "\n```" + tb[:1500] + "```"
     try:
         user = await bot.fetch_user(ADMIN_ID)
@@ -59,8 +66,11 @@ async def _notify(error: Exception, ctx=None):
     except Exception:
         traceback.print_exc()
 
-
 bot.notify = _notify
+
+
+# ── 起動 ──────────────────────────────────────────────────────────────────────
+
 keep_alive()
 while True:
     try:
