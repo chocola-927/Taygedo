@@ -21,7 +21,7 @@ class PinSelect(discord.ui.View):
         ],
         custom_id="pin:select",
     )
-    async def select(self, interaction: discord.Interaction, select: discord.ui.Select):
+    async def select(self, select: discord.ui.Select, interaction: discord.Interaction):
         guild_id = str(interaction.guild_id)
         ch_id    = str(self.target.channel.id)
         pins     = utils.load(guild_id, "pins.json")
@@ -95,6 +95,47 @@ class Pin(commands.Cog):
     async def pin_menu(self, ctx: discord.ApplicationContext, message: discord.Message):
         view = PinSelect(message)
         await ctx.respond("操作を選択してください。", view=view, ephemeral=True)
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """新着メッセージが来たら固定メッセージを一番下に送り直す"""
+        if not message.guild or message.author == self.bot.user:
+            return
+
+        guild_id = str(message.guild.id)
+        ch_id    = str(message.channel.id)
+        pins     = utils.load(guild_id, "pins.json")
+
+        if ch_id not in pins:
+            return
+
+        entry = pins[ch_id]
+
+        # 元の固定対象メッセージを取得
+        try:
+            source_msg = await message.channel.fetch_message(
+                int(entry["source_message_id"]))
+        except discord.NotFound:
+            # 元メッセージが消えていたら固定解除
+            del pins[ch_id]
+            utils.save(guild_id, "pins.json", pins)
+            return
+
+        # 古い固定メッセージを削除
+        old_id = entry.get("current_message_id")
+        if old_id:
+            try:
+                old_msg = await message.channel.fetch_message(int(old_id))
+                await old_msg.delete()
+            except discord.NotFound:
+                pass
+
+        # 送り直す
+        embed = _pin_embed(source_msg)
+        sent  = await message.channel.send(embed=embed)
+
+        pins[ch_id]["current_message_id"] = str(sent.id)
+        utils.save(guild_id, "pins.json", pins)
 
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message):

@@ -26,7 +26,7 @@ class AuthButtonView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="認証する", style=discord.ButtonStyle.success,
+    @discord.ui.button(label="認証", style=discord.ButtonStyle.success,
                        custom_id="auth:button")
     async def auth(self, button, interaction: discord.Interaction):
         guild_id = str(interaction.guild_id)
@@ -96,7 +96,7 @@ class AuthCalcView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="認証する", style=discord.ButtonStyle.success,
+    @discord.ui.button(label="認証", style=discord.ButtonStyle.success,
                        custom_id="auth:calc")
     async def auth(self, button, interaction: discord.Interaction):
         question, answer = _make_question()
@@ -136,7 +136,6 @@ class Auth(commands.Cog):
             color=0x00A960,
             timestamp=datetime.now(timezone.utc),
         )
-        embed.set_footer(text=ctx.guild.name)
         await ctx.channel.send(embed=embed, view=view)
         await ctx.respond("認証パネルを設置しました。", ephemeral=True)
 
