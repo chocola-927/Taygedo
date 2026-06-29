@@ -21,7 +21,7 @@ class PinSelect(discord.ui.View):
         ],
         custom_id="pin:select",
     )
-    async def select(self, select, interaction: discord.Interaction):
+    async def select(self, interaction: discord.Interaction, select: discord.ui.Select):
         guild_id = str(interaction.guild_id)
         ch_id    = str(self.target.channel.id)
         pins     = utils.load(guild_id, "pins.json")
