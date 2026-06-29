@@ -62,30 +62,39 @@ async def on_ready():
                     print(f"cog load error: {f} {e}")
         bot.cogs_loaded = True
 
-        current_hash = _compute_commands_hash()
-        previous_hash = None
-        try:
-            previous_hash = _load_synced_hash()
-        except Exception as e:
-            print(f"command hash load failed (will sync anyway): {e}")
+        cmd_count = len(bot.pending_application_commands)
+        print(f"[debug] pending_application_commands count: {cmd_count}", flush=True)
+        print(f"[debug] command names: {[c.name for c in bot.pending_application_commands]}", flush=True)
 
-        print(f"[debug] pending_application_commands count: {len(bot.pending_application_commands)}")
-        print(f"[debug] command names: {[c.name for c in bot.pending_application_commands]}")
-
-        if previous_hash == current_hash:
-            print("commands unchanged, skipping sync_commands()")
+        # コマンドが1件も無いのに同期しようとするのは異常なので、ここで止めてハッシュも保存しない
+        if cmd_count == 0:
+            print("[警告] pending_application_commandsが0件のため、同期をスキップします。")
+            await _notify(RuntimeError(
+                "pending_application_commands が0件でした。cogのコマンド定義を確認してください。"
+            ))
         else:
+            current_hash = _compute_commands_hash()
+            previous_hash = None
+            force_sync = os.environ.get("FORCE_COMMAND_SYNC") == "1"
             try:
-                await asyncio.wait_for(bot.sync_commands(), timeout=60)
-                print("commands synced")
-                _save_synced_hash(current_hash)
-            except asyncio.TimeoutError:
-                print("command sync timed out after 60s")
-                await _notify(RuntimeError("sync_commands() timed out after 60s"))
+                previous_hash = _load_synced_hash()
             except Exception as e:
-                traceback.print_exc()
-                print(f"command sync error: {e}")
-                await _notify(e)  # 同期失敗を管理者にDMで知らせる
+                print(f"command hash load failed (will sync anyway): {e}")
+
+            if previous_hash == current_hash and not force_sync:
+                print("commands unchanged, skipping sync_commands()")
+            else:
+                try:
+                    await asyncio.wait_for(bot.sync_commands(), timeout=60)
+                    print("commands synced")
+                    _save_synced_hash(current_hash)
+                except asyncio.TimeoutError:
+                    print("command sync timed out after 60s")
+                    await _notify(RuntimeError("sync_commands() timed out after 60s"))
+                except Exception as e:
+                    traceback.print_exc()
+                    print(f"command sync error: {e}")
+                    await _notify(e)  # 同期失敗を管理者にDMで知らせる
 
         # 起動/再起動の通知（初回のon_readyでのみ送信、同期の成否に関わらず送る）
         await _notify_startup()
