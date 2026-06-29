@@ -69,6 +69,9 @@ async def on_ready():
         except Exception as e:
             print(f"command hash load failed (will sync anyway): {e}")
 
+        print(f"[debug] pending_application_commands count: {len(bot.pending_application_commands)}")
+        print(f"[debug] command names: {[c.name for c in bot.pending_application_commands]}")
+
         if previous_hash == current_hash:
             print("commands unchanged, skipping sync_commands()")
         else:
