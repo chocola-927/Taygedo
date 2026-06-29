@@ -62,11 +62,14 @@ async def _notify(error: Exception, ctx=None):
 
 bot.notify = _notify
 keep_alive()
-print("keep_alive started")
-print(f"TOKEN: {TOKEN is not None}, ADMIN_ID: {ADMIN_ID}")
-try:
-    bot.run(TOKEN)
-except Exception as e:
-    traceback.print_exc()
-    print(f"bot.run failed: {e}")
-print("bot.run exited")
+while True:
+    try:
+        bot.run(TOKEN)
+    except Exception as e:
+        traceback.print_exc()
+        print(f"bot crashed: {e}, restarting...")
+        import time
+        time.sleep(5)
+    print("bot.run exited, restarting...")
+    import time
+    time.sleep(5)
