@@ -18,27 +18,22 @@ intents.message_content = True
 bot = discord.Bot(intents=intents)
 
 
-# ── cogロード（起動時に一度だけ実行） ────────────────────────────────────────
-
-async def setup_hook():
-    for f in os.listdir("./cogs"):
-        if f.endswith(".py") and not f.startswith("_"):
-            try:
-                bot.load_extension(f"cogs.{f[:-3]}")
-                print(f"cog loaded: {f}")
-            except Exception as e:
-                traceback.print_exc()
-                print(f"cog load error: {f} {e}")
-
-bot.setup_hook = setup_hook
-
-
 # ── イベント ──────────────────────────────────────────────────────────────────
 
 @bot.event
 async def on_ready():
-    await bot.sync_commands()
-    print(f"commands synced")
+    if not hasattr(bot, "cogs_loaded"):
+        for f in os.listdir("./cogs"):
+            if f.endswith(".py") and not f.startswith("_"):
+                try:
+                    bot.load_extension(f"cogs.{f[:-3]}")
+                    print(f"cog loaded: {f}")
+                except Exception as e:
+                    traceback.print_exc()
+                    print(f"cog load error: {f} {e}")
+        bot.cogs_loaded = True
+        await bot.sync_commands()
+        print("commands synced")
     print(f"ready: {bot.user}")
 
 
