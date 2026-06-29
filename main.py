@@ -23,9 +23,14 @@ async def on_ready():
             if f.endswith(".py") and not f.startswith("_"):
                 try:
                     bot.load_extension(f"cogs.{f[:-3]}")
+                    print(f"cog loaded: {f}")
                 except Exception as e:
+                    traceback.print_exc()
                     print(f"cog load error: {f} {e}")
         bot.cogs_loaded = True
+
+        await bot.sync_commands()
+        print("commands synced")
 
     print(f"ready: {bot.user}")
 
