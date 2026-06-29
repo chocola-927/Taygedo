@@ -24,6 +24,22 @@ bot = discord.Bot(intents=intents)
 _GLOBAL_KEY = "_global"  # ギルド単位ではないグローバル設定用の擬似guild_id
 
 
+def _normalize(obj):
+    """dict/list内の順序が不安定な要素(set由来のリスト等)を正規化する。
+    dictはkeyでソートされたJSON化に任せるが、list（特にcontexts/integration_typesなど
+    setから変換されたもの）は要素を比較可能な文字列キーでソートして順序を固定する。
+    """
+    if isinstance(obj, dict):
+        return {k: _normalize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        normalized = [_normalize(v) for v in obj]
+        try:
+            return sorted(normalized, key=lambda v: json.dumps(v, sort_keys=True))
+        except TypeError:
+            return normalized
+    return obj
+
+
 def _compute_commands_hash() -> str:
     """現在登録されている全スラッシュコマンドの定義からハッシュを計算する"""
     defs = []
@@ -32,7 +48,7 @@ def _compute_commands_hash() -> str:
             payload = cmd.to_dict()
         except Exception:
             payload = {"name": getattr(cmd, "name", str(cmd))}
-        defs.append(payload)
+        defs.append(_normalize(payload))
     # 順序の揺れに影響されないようnameでソートしてからJSON化
     defs.sort(key=lambda d: d.get("name", ""))
     raw = json.dumps(defs, sort_keys=True, ensure_ascii=False)
@@ -80,6 +96,9 @@ async def on_ready():
                 previous_hash = _load_synced_hash()
             except Exception as e:
                 print(f"command hash load failed (will sync anyway): {e}")
+
+            print(f"[debug] current_hash:  {current_hash}", flush=True)
+            print(f"[debug] previous_hash: {previous_hash}", flush=True)
 
             if previous_hash == current_hash and not force_sync:
                 print("commands unchanged, skipping sync_commands()")
