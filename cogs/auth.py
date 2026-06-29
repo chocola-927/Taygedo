@@ -1,6 +1,5 @@
 import discord
 from discord.ext import commands
-from datetime import datetime, timezone
 import random, sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import utils
@@ -123,7 +122,6 @@ class Auth(commands.Cog):
                                                      default="下のボタンを押して認証してください。")):
         await ctx.defer(ephemeral=True)
 
-        # auth_role を config に保存
         guild_id = str(ctx.guild_id)
         cfg      = utils.load(guild_id, "config.json")
         cfg["auth_role"] = str(role.id)
@@ -134,7 +132,6 @@ class Auth(commands.Cog):
             title=title,
             description=description,
             color=0x00A960,
-            timestamp=datetime.now(timezone.utc),
         )
         await ctx.channel.send(embed=embed, view=view)
         await ctx.respond("認証パネルを設置しました。", ephemeral=True)

@@ -38,7 +38,12 @@ class Moderation(commands.Cog):
     async def ban(self, ctx: discord.ApplicationContext,
                   user: discord.Option(discord.Member, "対象ユーザー"),
                   reason: discord.Option(str, "理由", required=False)):
-        await user.ban(reason=reason)
+        try:
+            await user.ban(reason=reason)
+        except discord.Forbidden:
+            return await ctx.respond(
+                "BANできませんでした。Botのロールが対象ユーザーより上位か確認してください。",
+                ephemeral=True)
         await ctx.respond(f"{user.mention} をBANしました。", ephemeral=True)
         await self._send_log(ctx.guild, "ban", _log_embed(
             f"{user.mention} がBANされました\n"
@@ -53,12 +58,17 @@ class Moderation(commands.Cog):
     async def kick(self, ctx: discord.ApplicationContext,
                    user: discord.Option(discord.Member, "対象ユーザー"),
                    reason: discord.Option(str, "理由", required=False)):
-        # log.py の on_member_remove で重複しないようフラグを立てる
         if not hasattr(self.bot, "_kicked_users"):
             self.bot._kicked_users = set()
         self.bot._kicked_users.add(user.id)
 
-        await user.kick(reason=reason)
+        try:
+            await user.kick(reason=reason)
+        except discord.Forbidden:
+            self.bot._kicked_users.discard(user.id)
+            return await ctx.respond(
+                "Kickできませんでした。Botのロールが対象ユーザーより上位か確認してください。",
+                ephemeral=True)
         await ctx.respond(f"{user.mention} をKickしました。", ephemeral=True)
         await self._send_log(ctx.guild, "kick", _log_embed(
             f"{user.mention} がKickされました\n"
@@ -75,7 +85,12 @@ class Moderation(commands.Cog):
                       minutes: discord.Option(int, "分数"),
                       reason: discord.Option(str, "理由", required=False)):
         until = discord.utils.utcnow() + timedelta(minutes=minutes)
-        await user.timeout_for(timedelta(minutes=minutes), reason=reason)
+        try:
+            await user.timeout_for(timedelta(minutes=minutes), reason=reason)
+        except discord.Forbidden:
+            return await ctx.respond(
+                "タイムアウトできませんでした。Botのロールが対象ユーザーより上位か確認してください。",
+                ephemeral=True)
         await ctx.respond(f"{user.mention} を {minutes} 分タイムアウトしました。", ephemeral=True)
         await self._send_log(ctx.guild, "timeout", _log_embed(
             f"{user.mention} がタイムアウトされました\n"
