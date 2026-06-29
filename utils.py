@@ -1,22 +1,30 @@
-import json, os
-from pathlib import Path
- 
-_BASE    = Path(__file__).parent
-DATA_DIR = _BASE / "data" / "guilds"
- 
-def guild_path(guild_id, filename):
-    return DATA_DIR / str(guild_id) / filename
- 
-def load(guild_id, filename):
-    path = guild_path(guild_id, filename)
-    if not path.exists():
+import os
+from pymongo import MongoClient
+
+_client = MongoClient(os.environ["MONGO_URI"])
+_db     = _client["taygedo"]
+
+
+def _col(guild_id: str, filename: str):
+    """guilds/{guild_id}/{filename} に対応するコレクションを返す"""
+    name = filename.replace(".json", "")
+    return _db[f"{guild_id}_{name}"]
+
+
+def load(guild_id: str, filename: str) -> dict:
+    col = _col(guild_id, filename)
+    doc = col.find_one({"_id": "data"})
+    if not doc:
         return {}
-    return json.loads(path.read_text(encoding="utf-8"))
- 
-def save(guild_id, filename, data):
-    path = guild_path(guild_id, filename)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
- 
-def get_config(guild_id):
+    data = dict(doc)
+    data.pop("_id", None)
+    return data
+
+
+def save(guild_id: str, filename: str, data: dict):
+    col = _col(guild_id, filename)
+    col.replace_one({"_id": "data"}, {"_id": "data", **data}, upsert=True)
+
+
+def get_config(guild_id: str) -> dict:
     return load(guild_id, "config.json")
