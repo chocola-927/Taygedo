@@ -72,14 +72,4 @@ bot.notify = _notify
 # ── 起動 ──────────────────────────────────────────────────────────────────────
 
 keep_alive()
-while True:
-    try:
-        bot.run(TOKEN)
-    except Exception as e:
-        traceback.print_exc()
-        print(f"bot crashed: {e}, restarting...")
-        import time
-        time.sleep(5)
-    print("bot.run exited, restarting...")
-    import time
-    time.sleep(5)
+bot.run(TOKEN)
