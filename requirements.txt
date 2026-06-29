@@ -1,4 +1,4 @@
 py-cord==2.6.1
 python-dotenv
 flask
-pymongo[srv]
+pymongo[srv]==4.6.3
