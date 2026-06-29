@@ -4,6 +4,12 @@ from pymongo import MongoClient
 _client = MongoClient(os.environ["MONGO_URI"])
 _db     = _client["taygedo"]
 
+try:
+    _client.admin.command("ping")
+    print("MongoDB connected")
+except Exception as e:
+    print(f"MongoDB connection failed: {e}")
+
 
 def _col(guild_id: str, filename: str):
     """guilds/{guild_id}/{filename} に対応するコレクションを返す"""
