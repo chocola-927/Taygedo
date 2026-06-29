@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: taygedo
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /
+    numInstances: 1
+    envVars:
+      - key: TOKEN
+        sync: false
+      - key: ADMIN_ID
+        sync: false
