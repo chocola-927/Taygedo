@@ -62,5 +62,9 @@ bot.notify = _notify
 keep_alive()
 print("keep_alive started")
 print(f"TOKEN: {TOKEN is not None}, ADMIN_ID: {ADMIN_ID}")
-bot.run(TOKEN)
-print("bot.run exited")  # これが出たらbot.runが即終了している
+try:
+    bot.run(TOKEN)
+except Exception as e:
+    traceback.print_exc()
+    print(f"bot.run failed: {e}")
+print("bot.run exited")
