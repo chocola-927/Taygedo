@@ -1,9 +1,11 @@
-import os, traceback
+import signal, os, traceback
 from datetime import datetime, timezone
-
 import discord
 from dotenv import load_dotenv
 from keep_alive import keep_alive
+
+# SIGTERMを無視してbotを生かし続ける
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
