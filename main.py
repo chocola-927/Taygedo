@@ -60,4 +60,7 @@ async def _notify(error: Exception, ctx=None):
 
 bot.notify = _notify
 keep_alive()
+print("keep_alive started")
+print(f"TOKEN: {TOKEN is not None}, ADMIN_ID: {ADMIN_ID}")
 bot.run(TOKEN)
+print("bot.run exited")  # これが出たらbot.runが即終了している
