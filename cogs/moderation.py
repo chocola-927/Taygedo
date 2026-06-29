@@ -6,11 +6,21 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 import utils
 
 
+def _log_embed(description, color, guild, user=None):
+    e = discord.Embed(description=description, color=color,
+                      timestamp=datetime.now(timezone.utc))
+    e.set_footer(text=guild.name)
+    if user:
+        e.set_author(name=user.name, icon_url=user.display_avatar.url)
+        e.set_thumbnail(url=user.display_avatar.url)
+    return e
+
+
 class Moderation(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    async def _log(self, guild, key, description, color, user=None):
+    async def _send_log(self, guild, key, embed):
         cfg   = utils.get_config(str(guild.id))
         if not cfg.get("logs", {}).get(key, True):
             return
@@ -18,14 +28,10 @@ class Moderation(commands.Cog):
         if not ch_id:
             return
         ch = guild.get_channel(int(ch_id))
-        if not ch:
-            return
-        e = discord.Embed(description=description, color=color,
-                          timestamp=datetime.now(timezone.utc))
-        if user:
-            e.set_author(name=user.name, icon_url=user.display_avatar.url)
-        e.set_footer(text=guild.name)
-        await ch.send(embed=e)
+        if ch:
+            await ch.send(embed=embed)
+
+    # ── BAN ───────────────────────────────────────────────────────────────────
 
     @discord.slash_command(description="ユーザーをBANします")
     @discord.default_permissions(ban_members=True)
@@ -34,31 +40,33 @@ class Moderation(commands.Cog):
                   reason: discord.Option(str, "理由", required=False)):
         await user.ban(reason=reason)
         await ctx.respond(f"{user.mention} をBANしました。", ephemeral=True)
-        await self._log(ctx.guild, "ban",
-            f"{user.mention} がBANされました\n理由: {reason or 'なし'}\n実行者: {ctx.user.mention}",
-            0xE8383D, user)
+        await self._send_log(ctx.guild, "ban", _log_embed(
+            f"{user.mention} がBANされました\n"
+            f"理由: {reason or 'なし'}\n"
+            f"実行者: {ctx.user.mention}",
+            0xE8383D, ctx.guild, user))
+
+    # ── Kick ──────────────────────────────────────────────────────────────────
 
     @discord.slash_command(description="ユーザーをKickします")
     @discord.default_permissions(kick_members=True)
     async def kick(self, ctx: discord.ApplicationContext,
                    user: discord.Option(discord.Member, "対象ユーザー"),
                    reason: discord.Option(str, "理由", required=False)):
-        # kick前にuser情報を保持（kick後はguildから消えるため）
-        user_id   = user.id
-        user_name = user.name
+        # log.py の on_member_remove で重複しないようフラグを立てる
+        if not hasattr(self.bot, "_kicked_users"):
+            self.bot._kicked_users = set()
+        self.bot._kicked_users.add(user.id)
 
         await user.kick(reason=reason)
         await ctx.respond(f"{user.mention} をKickしました。", ephemeral=True)
+        await self._send_log(ctx.guild, "kick", _log_embed(
+            f"{user.mention} がKickされました\n"
+            f"理由: {reason or 'なし'}\n"
+            f"実行者: {ctx.user.mention}",
+            0xE8383D, ctx.guild, user))
 
-        # logging.py の on_member_remove と二重にならないよう
-        # bot にフラグを立てて logging 側でスキップさせる
-        if not hasattr(self.bot, "_kicked_users"):
-            self.bot._kicked_users = set()
-        self.bot._kicked_users.add(user_id)
-
-        await self._log(ctx.guild, "kick",
-            f"<@{user_id}> がKickされました\n理由: {reason or 'なし'}\n実行者: {ctx.user.mention}",
-            0xE8383D, None)
+    # ── タイムアウト ──────────────────────────────────────────────────────────
 
     @discord.slash_command(description="ユーザーをタイムアウトします")
     @discord.default_permissions(moderate_members=True)
@@ -66,11 +74,17 @@ class Moderation(commands.Cog):
                       user: discord.Option(discord.Member, "対象ユーザー"),
                       minutes: discord.Option(int, "分数"),
                       reason: discord.Option(str, "理由", required=False)):
+        until = discord.utils.utcnow() + timedelta(minutes=minutes)
         await user.timeout_for(timedelta(minutes=minutes), reason=reason)
         await ctx.respond(f"{user.mention} を {minutes} 分タイムアウトしました。", ephemeral=True)
-        await self._log(ctx.guild, "timeout",
-            f"{user.mention} がタイムアウトされました\n期間: {minutes}分\n理由: {reason or 'なし'}\n実行者: {ctx.user.mention}",
-            0xF0B132, user)
+        await self._send_log(ctx.guild, "timeout", _log_embed(
+            f"{user.mention} がタイムアウトされました\n"
+            f"期間: {minutes}分（解除: {discord.utils.format_dt(until, 'R')}）\n"
+            f"理由: {reason or 'なし'}\n"
+            f"実行者: {ctx.user.mention}",
+            0xF0B132, ctx.guild, user))
+
+    # ── 警告 ──────────────────────────────────────────────────────────────────
 
     @discord.slash_command(description="ユーザーに警告を送ります")
     @discord.default_permissions(moderate_members=True)
@@ -84,7 +98,7 @@ class Moderation(commands.Cog):
 
         try:
             e = discord.Embed(
-                title="警告",
+                title="⚠️ 警告",
                 description=f"**サーバー**: {ctx.guild.name}\n**理由**: {reason or 'なし'}",
                 color=0xF0B132,
                 timestamp=datetime.now(timezone.utc),
@@ -95,9 +109,14 @@ class Moderation(commands.Cog):
 
         count = warns[str(user.id)]
         await ctx.respond(f"{user.mention} に警告を送りました。（累計: {count}回）", ephemeral=True)
-        await self._log(ctx.guild, "warn",
-            f"{user.mention} に警告\n理由: {reason or 'なし'}\n累計: **{count}回**\n実行者: {ctx.user.mention}",
-            0xF0B132, user)
+        await self._send_log(ctx.guild, "warn", _log_embed(
+            f"{user.mention} に警告\n"
+            f"理由: {reason or 'なし'}\n"
+            f"累計: **{count}回**\n"
+            f"実行者: {ctx.user.mention}",
+            0xF0B132, ctx.guild, user))
+
+    # ── Purge ─────────────────────────────────────────────────────────────────
 
     @discord.slash_command(description="メッセージを一括削除します")
     @discord.default_permissions(manage_messages=True)

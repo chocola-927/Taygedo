@@ -16,7 +16,7 @@ def _embed(description, color, guild, author=None):
     return e
 
 
-class Logging(commands.Cog):
+class Log(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
@@ -31,6 +31,8 @@ class Logging(commands.Cog):
         if ch:
             await ch.send(embed=embed)
 
+    # ── メッセージ削除 ────────────────────────────────────────────────────────
+
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message):
         if not message.guild or message.author.bot:
@@ -42,6 +44,8 @@ class Logging(commands.Cog):
         )
         await self._send(message.guild, "message_delete",
             _embed(desc, 0xE8383D, message.guild, message.author))
+
+    # ── メッセージ編集 ────────────────────────────────────────────────────────
 
     @commands.Cog.listener()
     async def on_message_edit(self, before: discord.Message, after: discord.Message):
@@ -55,34 +59,36 @@ class Logging(commands.Cog):
         await self._send(before.guild, "message_edit",
             _embed(desc, 0xF0B132, before.guild, before.author))
 
+    # ── 参加 ──────────────────────────────────────────────────────────────────
+
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         desc = (
             f"{member.mention} がサーバーに参加しました\n"
+            f"アカウント作成: {discord.utils.format_dt(member.created_at, 'R')}\n"
             f"現在のメンバー数: **{member.guild.member_count}**"
         )
         await self._send(member.guild, "member_join",
             _embed(desc, 0x00A960, member.guild, member))
 
+    # ── 退出（BAN/Kickはmoderation.pyが担当） ────────────────────────────────
+
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
-        # moderation.py の /kick コマンドで処理済みの場合はスキップ
+        # moderation.py の /kick で処理済みならスキップ
         kicked_users = getattr(self.bot, "_kicked_users", set())
         if member.id in kicked_users:
             kicked_users.discard(member.id)
             return
 
-        # audit_log でBAN/Kickを判定
+        # audit_log でBAN/Kickを確認 → どちらかなら退出ログを出さない
+        # （BAN/KickはそれぞれmodEration.pyがログ済み）
         try:
-            async for entry in member.guild.audit_logs(
-                limit=1, action=discord.AuditLogAction.kick
-            ):
-                if entry.target.id == member.id:
-                    await self._send(member.guild, "kick",
-                        _embed(
-                            f"{member.mention} がKickされました\n実行者: {entry.user.mention}",
-                            0xE8383D, member.guild, member,
-                        ))
+            async for entry in member.guild.audit_logs(limit=3):
+                if entry.target.id != member.id:
+                    continue
+                if entry.action in (discord.AuditLogAction.ban,
+                                    discord.AuditLogAction.kick):
                     return
         except discord.Forbidden:
             pass
@@ -94,13 +100,11 @@ class Logging(commands.Cog):
         await self._send(member.guild, "member_leave",
             _embed(desc, 0xE8383D, member.guild, member))
 
-    @commands.Cog.listener()
-    async def on_member_ban(self, guild: discord.Guild, user: discord.User):
-        await self._send(guild, "ban",
-            _embed(f"{user.mention} がBANされました", 0xE8383D, guild, user))
+    # ── ロール変更 ────────────────────────────────────────────────────────────
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
+        # タイムアウトはmoderation.pyが担当なのでスキップ
         for r in [r for r in after.roles if r not in before.roles]:
             await self._send(before.guild, "role_add",
                 _embed(f"{after.mention} にロール {r.mention} が付与されました",
@@ -110,16 +114,6 @@ class Logging(commands.Cog):
                 _embed(f"{after.mention} からロール {r.mention} が削除されました",
                        0xE8383D, before.guild, after))
 
-        before_timeout = getattr(before, "timed_out_until", None)
-        after_timeout  = getattr(after,  "timed_out_until", None)
-        if not before_timeout and after_timeout:
-            await self._send(before.guild, "timeout",
-                _embed(
-                    f"{after.mention} がタイムアウトされました\n"
-                    f"解除: {discord.utils.format_dt(after_timeout, 'R')}",
-                    0xF0B132, before.guild, after,
-                ))
-
 
 def setup(bot):
-    bot.add_cog(Logging(bot))
+    bot.add_cog(Log(bot))
