@@ -64,6 +64,38 @@ def _save_synced_hash(h: str):
     utils.save(_GLOBAL_KEY, "command_sync.json", {"hash": h})
 
 
+# ── 同期結果の検証（実際にDiscord側へ反映されたか確認する） ──────────────────────
+async def _verify_synced(expected_count: int) -> bool:
+    """Discord側に実際に登録されているグローバルコマンド数を取得し、期待値と比較する"""
+    try:
+        async with aiohttp.ClientSession(
+            headers={"Authorization": f"Bot {TOKEN}"}
+        ) as session:
+            async with session.get(
+                "https://discord.com/api/v10/oauth2/applications/@me"
+            ) as resp:
+                if resp.status != 200:
+                    print(f"[verify] application fetch failed: {resp.status}")
+                    return False
+                app = await resp.json()
+                app_id = app["id"]
+
+            async with session.get(
+                f"https://discord.com/api/v10/applications/{app_id}/commands"
+            ) as resp:
+                if resp.status != 200:
+                    print(f"[verify] command list fetch failed: {resp.status}")
+                    return False
+                commands = await resp.json()
+
+        actual_count = len(commands)
+        print(f"[verify] actual registered count: {actual_count} (expected {expected_count})", flush=True)
+        return actual_count == expected_count
+    except Exception as e:
+        print(f"[verify] verification failed: {e}")
+        return False
+
+
 # ── イベント ──────────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
@@ -106,7 +138,17 @@ async def on_ready():
                 try:
                     await asyncio.wait_for(bot.sync_commands(), timeout=60)
                     print("commands synced")
-                    _save_synced_hash(current_hash)
+
+                    # 実際にDiscord側へ正しく反映されたか検証してからハッシュを保存する
+                    if await _verify_synced(cmd_count):
+                        _save_synced_hash(current_hash)
+                        print("[verify] OK — hash saved")
+                    else:
+                        print("[verify] NG — Discord側の件数が一致しないため、ハッシュは保存しません")
+                        await _notify(RuntimeError(
+                            f"sync_commands()は成功と返ったが、Discord側の実際の登録件数が"
+                            f"期待値({cmd_count})と一致しませんでした。ハッシュは保存していません。"
+                        ))
                 except asyncio.TimeoutError:
                     print("command sync timed out after 60s")
                     await _notify(RuntimeError("sync_commands() timed out after 60s"))
