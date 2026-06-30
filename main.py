@@ -137,16 +137,20 @@ async def on_ready():
         # ── プロセスロック ────────────────────────────────────────────────────────
         # 自分のプロセスIDを登録して、少し待ってから「自分が最新か」を確認する。
         # 複数プロセスが同時に起動した場合、最後に書いたプロセスだけが primary になる。
-        _register_process()
-        print(f"[lock] registered process: {_PROCESS_ID}", flush=True)
-        await asyncio.sleep(3)  # 他のプロセスが上書きする猶予を与える
+        try:
+            _register_process()
+            print(f"[lock] registered process: {_PROCESS_ID}", flush=True)
+            await asyncio.sleep(3)  # 他のプロセスが上書きする猶予を与える
 
-        if not _is_primary_process():
-            print(f"[lock] another process took over — skipping sync_commands()", flush=True)
-            await _notify_startup()
-            print(f"ready: {bot.user}")
-            return
-        print(f"[lock] confirmed primary process", flush=True)
+            if not _is_primary_process():
+                print(f"[lock] another process took over — skipping sync_commands()", flush=True)
+                await _notify_startup()
+                print(f"ready: {bot.user}")
+                return
+            print(f"[lock] confirmed primary process", flush=True)
+        except Exception as e:
+            traceback.print_exc()
+            print(f"[lock] error during process lock check: {e}", flush=True)
         # ─────────────────────────────────────────────────────────────────────────
 
         cmd_count = len(bot.pending_application_commands)
