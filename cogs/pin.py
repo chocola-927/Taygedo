@@ -8,9 +8,7 @@ import utils
 
 # ── Webhook ヘルパー ──────────────────────────────────────────────────────────
 async def _get_or_create_webhook(channel: discord.TextChannel, entry: dict | None) -> discord.Webhook:
-    """entryに保存されたwebhook_id/tokenがあれば再利用し、無ければ新規作成する"""
     if entry and entry.get("webhook_id") and entry.get("webhook_token"):
-        # トークンがあればAPI呼び出し無しでWebhookオブジェクトを再構築できる
         return discord.Webhook.from_url(
             f"https://discord.com/api/webhooks/{entry['webhook_id']}/{entry['webhook_token']}",
         )
@@ -19,11 +17,9 @@ async def _get_or_create_webhook(channel: discord.TextChannel, entry: dict | Non
 
 async def _send_pinned(channel: discord.TextChannel, source_msg: discord.Message,
                         webhook: discord.Webhook) -> int:
-    """既存(または新規)Webhookで元メッセージを送信し、message_idを返す"""
     content = source_msg.content or None
     files = []
     for att in source_msg.attachments:
-        # 画像以外の添付ファイルは無視する
         if not (att.content_type or "").startswith("image/"):
             continue
         try:
@@ -42,7 +38,6 @@ async def _send_pinned(channel: discord.TextChannel, source_msg: discord.Message
 
 
 async def _delete_webhook_safe(entry: dict):
-    """保存済みのwebhook_id/tokenから直接Webhookを削除する（チャンネル一覧取得不要）"""
     wh_id = entry.get("webhook_id")
     wh_token = entry.get("webhook_token")
     if not (wh_id and wh_token):
@@ -56,11 +51,8 @@ async def _delete_webhook_safe(entry: dict):
         print(f"[pin] webhook delete skipped: {e}")
 
 
-# ── 固定解除ヘルパー ──────────────────────────────────────────────────────────
 async def _unpin(entry: dict, guild_id: str, ch_id: str):
-    """Webhookを削除し、pins.jsonから削除する"""
     await _delete_webhook_safe(entry)
-
     pins = utils.load(guild_id, "pins.json")
     if ch_id in pins:
         del pins[ch_id]
@@ -69,8 +61,7 @@ async def _unpin(entry: dict, guild_id: str, ch_id: str):
 
 # ── 上書き確認View ────────────────────────────────────────────────────────────
 class PinOverwriteView(discord.ui.View):
-    def __init__(self, channel: discord.TextChannel, target_message: discord.Message,
-                 guild_id: str, ch_id: str, existing_entry: dict):
+    def __init__(self, channel, target_message, guild_id, ch_id, existing_entry):
         super().__init__(timeout=30)
         self.channel = channel
         self.target = target_message
@@ -81,21 +72,15 @@ class PinOverwriteView(discord.ui.View):
     @discord.ui.button(label="解除して固定", style=discord.ButtonStyle.danger)
     async def confirm(self, button, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-
-        # 古い固定を解除（Webhookも削除）
         await _unpin(self.existing_entry, self.guild_id, self.ch_id)
-
-        # 新しいWebhookを作成して固定
         try:
             wh = await _get_or_create_webhook(self.channel, None)
             msg_id = await _send_pinned(self.channel, self.target, wh)
         except discord.Forbidden:
-            return await interaction.followup.send(
-                "Webhookの作成権限がありません。", ephemeral=True)
+            return await interaction.followup.send("Webhookの作成権限がありません。", ephemeral=True)
         except Exception as e:
             print(f"[pin] overwrite send failed: {e}")
-            return await interaction.followup.send(
-                "固定メッセージの送信に失敗しました。", ephemeral=True)
+            return await interaction.followup.send("固定メッセージの送信に失敗しました。", ephemeral=True)
 
         pins = utils.load(self.guild_id, "pins.json")
         pins[self.ch_id] = {
@@ -114,7 +99,7 @@ class PinOverwriteView(discord.ui.View):
 
 # ── セレクト ──────────────────────────────────────────────────────────────────
 class PinSelect(discord.ui.View):
-    def __init__(self, target_message: discord.Message):
+    def __init__(self, target_message):
         super().__init__(timeout=60)
         self.target = target_message
 
@@ -126,19 +111,15 @@ class PinSelect(discord.ui.View):
         ],
         custom_id="pin:select",
     )
-    async def select(self, select: discord.ui.Select, interaction: discord.Interaction):
+    async def select(self, select, interaction: discord.Interaction):
         guild_id = str(interaction.guild_id)
         ch_id = str(self.target.channel.id)
         pins = utils.load(guild_id, "pins.json")
 
         if select.values[0] == "pin":
-            # すでに固定中なら警告
             if ch_id in pins:
                 existing = pins[ch_id]
-                view = PinOverwriteView(
-                    self.target.channel, self.target,
-                    guild_id, ch_id, existing,
-                )
+                view = PinOverwriteView(self.target.channel, self.target, guild_id, ch_id, existing)
                 return await interaction.response.edit_message(
                     content=(
                         "⚠️ このチャンネルにはすでに固定されたメッセージがあります。\n"
@@ -146,18 +127,14 @@ class PinSelect(discord.ui.View):
                     ),
                     view=view,
                 )
-
-            # 新規固定（Webhookを新規作成）
             try:
                 wh = await _get_or_create_webhook(self.target.channel, None)
                 msg_id = await _send_pinned(self.target.channel, self.target, wh)
             except discord.Forbidden:
-                return await interaction.response.edit_message(
-                    content="Webhookの作成権限がありません。", view=None)
+                return await interaction.response.edit_message(content="Webhookの作成権限がありません。", view=None)
             except Exception as e:
                 print(f"[pin] new pin send failed: {e}")
-                return await interaction.response.edit_message(
-                    content="固定メッセージの送信に失敗しました。", view=None)
+                return await interaction.response.edit_message(content="固定メッセージの送信に失敗しました。", view=None)
 
             pins[ch_id] = {
                 "source_message_id": str(self.target.id),
@@ -167,10 +144,9 @@ class PinSelect(discord.ui.View):
             }
             utils.save(guild_id, "pins.json", pins)
             await interaction.response.edit_message(content="固定しました。", view=None)
-        else:  # unpin
+        else:
             if ch_id not in pins:
-                return await interaction.response.edit_message(
-                    content="固定されたメッセージがありません。", view=None)
+                return await interaction.response.edit_message(content="固定されたメッセージがありません。", view=None)
             await _unpin(pins[ch_id], guild_id, ch_id)
             await interaction.response.edit_message(content="固定を解除しました。", view=None)
 
@@ -187,36 +163,36 @@ class Pin(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """新着メッセージが来たら、固定済みのWebhookを使い回して一番下に送り直す"""
         if not message.guild or message.author == self.bot.user:
             return
         if message.webhook_id:
+            print(f"[pin] skipping webhook message in #{message.channel}")
             return
 
         guild_id = str(message.guild.id)
         ch_id = str(message.channel.id)
         pins = utils.load(guild_id, "pins.json")
+
+        print(f"[pin] on_message: ch={ch_id} pinned={ch_id in pins}")
+
         if ch_id not in pins:
             return
 
         entry = pins[ch_id]
+        print(f"[pin] reposting pin in #{message.channel}")
 
-        # 元メッセージを取得
         try:
-            source_msg = await message.channel.fetch_message(
-                int(entry["source_message_id"]))
+            source_msg = await message.channel.fetch_message(int(entry["source_message_id"]))
         except discord.NotFound:
-            # 元メッセージが消えていたら固定解除
+            print(f"[pin] source message gone, unpinning")
             await _unpin(entry, guild_id, ch_id)
             return
 
-        # 既存Webhookを使い回して再送（新規作成・削除なし）
         try:
             wh = await _get_or_create_webhook(message.channel, entry)
             new_msg_id = await _send_pinned(message.channel, source_msg, wh)
         except (discord.NotFound, discord.Forbidden) as e:
-            # Webhookが手動削除されている等の場合は、新規作成して復旧する
-            print(f"[pin] webhook unusable, recreating in #{message.channel}: {e}")
+            print(f"[pin] webhook unusable, recreating: {e}")
             try:
                 wh = await message.channel.create_webhook(name="Taygedo Pin")
                 new_msg_id = await _send_pinned(message.channel, source_msg, wh)
@@ -224,17 +200,17 @@ class Pin(commands.Cog):
                 print(f"[pin] webhook recreate failed: {e2}")
                 return
         except Exception as e:
-            print(f"[pin] resend failed in #{message.channel} (guild {guild_id}): {e}")
+            print(f"[pin] resend failed: {e}")
             return
 
         pins[ch_id]["current_message_id"] = str(new_msg_id)
         pins[ch_id]["webhook_id"] = str(wh.id)
         pins[ch_id]["webhook_token"] = wh.token
         utils.save(guild_id, "pins.json", pins)
+        print(f"[pin] done, new msg_id={new_msg_id}")
 
     @commands.Cog.listener()
     async def on_message_delete(self, message: discord.Message):
-        """元メッセージが消されたら固定解除"""
         if not message.guild:
             return
         guild_id = str(message.guild.id)
