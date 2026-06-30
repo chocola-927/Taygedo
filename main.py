@@ -1,4 +1,4 @@
-import os, traceback, signal, asyncio, hashlib, json
+import os, traceback, signal, asyncio, hashlib, json, time
 import aiohttp
 from datetime import datetime, timezone
 import discord
@@ -64,6 +64,21 @@ def _save_synced_hash(h: str):
     utils.save(_GLOBAL_KEY, "command_sync.json", {"hash": h})
 
 
+# ── プロセスロック（二重起動時に古いプロセスが同期するのを防ぐ） ──────────────────
+_PROCESS_ID = f"{os.getpid()}_{int(time.time())}"  # このプロセス固有のID
+
+
+def _register_process():
+    """自分のプロセスIDをMongoDBに登録する"""
+    utils.save(_GLOBAL_KEY, "process_lock.json", {"pid": _PROCESS_ID})
+
+
+def _is_primary_process() -> bool:
+    """MongoDBに登録されているプロセスIDが自分と一致するか確認する"""
+    data = utils.load(_GLOBAL_KEY, "process_lock.json")
+    return data.get("pid") == _PROCESS_ID
+
+
 # ── 同期結果の検証（実際にDiscord側へ反映されたか確認する） ──────────────────────
 async def _verify_synced(expected_count: int) -> bool:
     """Discord側に実際に登録されているグローバルコマンド数を取得し、期待値と比較する"""
@@ -109,6 +124,21 @@ async def on_ready():
                     traceback.print_exc()
                     print(f"cog load error: {f} {e}")
         bot.cogs_loaded = True
+
+        # ── プロセスロック ────────────────────────────────────────────────────────
+        # 自分のプロセスIDを登録して、少し待ってから「自分が最新か」を確認する。
+        # 複数プロセスが同時に起動した場合、最後に書いたプロセスだけが primary になる。
+        _register_process()
+        print(f"[lock] registered process: {_PROCESS_ID}", flush=True)
+        await asyncio.sleep(3)  # 他のプロセスが上書きする猶予を与える
+
+        if not _is_primary_process():
+            print(f"[lock] another process took over — skipping sync_commands()", flush=True)
+            await _notify_startup()
+            print(f"ready: {bot.user}")
+            return
+        print(f"[lock] confirmed primary process", flush=True)
+        # ─────────────────────────────────────────────────────────────────────────
 
         cmd_count = len(bot.pending_application_commands)
         print(f"[debug] pending_application_commands count: {cmd_count}", flush=True)
