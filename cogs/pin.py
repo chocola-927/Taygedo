@@ -7,9 +7,13 @@ import utils
 
 
 WEBHOOK_NAME = "Taygedo Pin"
+RESEND_DEBOUNCE_SECONDS = 5  # 連投中はこの秒数だけ待ってから1回だけ再送信する
 
 # チャンネルごとのロック（同時メッセージによるrace conditionを防ぐ）
 _channel_locks: dict[int, asyncio.Lock] = {}
+
+# チャンネルごとの「再送信予約」タスク（連投対策のデバウンス用）
+_resend_tasks: dict[int, asyncio.Task] = {}
 
 
 class PinUnsupportedContentError(Exception):
@@ -149,6 +153,41 @@ async def _resend_pin(channel: discord.TextChannel, guild_id: str, ch_id: str,
     }
     utils.save(guild_id, "pins.json", pins)
     return True
+
+
+async def _debounced_resend(channel: discord.TextChannel, guild_id: str, ch_id: str):
+    """RESEND_DEBOUNCE_SECONDS秒待ってから1回だけ再送信する。
+    待っている間に別のメッセージが来てキャンセルされたら何もしない。"""
+    try:
+        await asyncio.sleep(RESEND_DEBOUNCE_SECONDS)
+    except asyncio.CancelledError:
+        return
+
+    async with _get_lock(channel.id):
+        pins = utils.load(guild_id, "pins.json")
+        entry = pins.get(ch_id)
+        if not entry:
+            return
+
+        try:
+            current_msg = await channel.fetch_message(int(entry["current_message_id"]))
+        except discord.NotFound:
+            await _unpin(channel, entry, guild_id, ch_id)
+            return
+
+        await _resend_pin(channel, guild_id, ch_id, entry, current_msg)
+
+    _resend_tasks.pop(channel.id, None)
+
+
+def _schedule_resend(channel: discord.TextChannel, guild_id: str, ch_id: str):
+    """連投対策: すでに予約済みの再送信があればキャンセルして予約し直す（デバウンス）。"""
+    existing = _resend_tasks.get(channel.id)
+    if existing and not existing.done():
+        existing.cancel()
+    _resend_tasks[channel.id] = asyncio.create_task(
+        _debounced_resend(channel, guild_id, ch_id)
+    )
 
 
 # ── 上書き確認View ────────────────────────────────────────────────────────────
@@ -320,34 +359,24 @@ class Pin(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """新着メッセージが来たら、固定済みのWebhookメッセージを取得して一番下に送り直す"""
+        """新着メッセージが来たら、固定済みのWebhookメッセージを一番下に送り直す予約をする
+        （連投対策のため即時実行ではなくデバウンスする）"""
         if not message.guild or message.author == self.bot.user:
             return
 
         guild_id = str(message.guild.id)
         ch_id = str(message.channel.id)
 
-        async with _get_lock(message.channel.id):
-            pins = utils.load(guild_id, "pins.json")
+        pins = utils.load(guild_id, "pins.json")
+        entry = pins.get(ch_id)
+        if not entry:
+            return
 
-            if ch_id not in pins:
-                return
+        # 自分の固定用Webhookからのメッセージだけは無視する（他Botのwebhookは無視しない）
+        if message.webhook_id and str(message.webhook_id) == entry.get("webhook_id"):
+            return
 
-            entry = pins[ch_id]
-
-            # 自分の固定用Webhookからのメッセージだけは無視する（他Botのwebhookは無視しない）
-            if message.webhook_id and str(message.webhook_id) == entry.get("webhook_id"):
-                return
-
-            # 現在固定中のWebhookメッセージ自体をfetch
-            try:
-                current_msg = await message.channel.fetch_message(int(entry["current_message_id"]))
-            except discord.NotFound:
-                # 固定メッセージが手動で消されていたら固定解除
-                await _unpin(message.channel, entry, guild_id, ch_id)
-                return
-
-            await _resend_pin(message.channel, guild_id, ch_id, entry, current_msg)
+        _schedule_resend(message.channel, guild_id, ch_id)
 
 
 def setup(bot):
