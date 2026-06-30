@@ -1,13 +1,10 @@
-import os, traceback, signal, asyncio, hashlib, json, time
+import os, traceback, signal, asyncio, hashlib, json, time, sys
 import aiohttp
 from datetime import datetime, timezone
 import discord
 from dotenv import load_dotenv
 from keep_alive import keep_alive
 import utils
-
-# SIGTERMを無視してbotを生かし続ける
-signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
@@ -18,6 +15,18 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 bot = discord.Bot(intents=intents)
+
+
+# ── SIGTERMを受け取ったら速やかに正常終了する ──────────────────────────────────
+# Renderはゼロダウンタイムデプロイの際、新インスタンスの準備が整うと
+# 旧インスタンスにSIGTERMを送って終了を促す。これを無視すると旧プロセスが
+# 生き残り続け、新旧プロセスが同時にDiscordへ接続して二重起動状態になる。
+def _handle_sigterm(signum, frame):
+    print("[shutdown] SIGTERM received, shutting down gracefully...", flush=True)
+    sys.exit(0)
+
+
+signal.signal(signal.SIGTERM, _handle_sigterm)
 
 
 # ── コマンド定義のハッシュ管理（変更が無ければ同期をスキップする） ───────────────
