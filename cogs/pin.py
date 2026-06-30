@@ -15,6 +15,25 @@ _channel_locks: dict[int, asyncio.Lock] = {}
 # チャンネルごとの「再送信予約」タスク（連投対策のデバウンス用）
 _resend_tasks: dict[int, asyncio.Task] = {}
 
+# pins.jsonのキャッシュ（guild_id -> pins dict）。毎回ファイルI/Oしないようにする
+_PIN_CACHE: dict[str, dict] = {}
+
+# Webhookのキャッシュ（channel_id -> discord.Webhook）。毎回channel.webhooks()を叩かないようにする
+_WEBHOOK_CACHE: dict[int, discord.Webhook] = {}
+
+
+def _get_pins(guild_id: str) -> dict:
+    """pins.jsonをキャッシュ付きで取得する"""
+    if guild_id not in _PIN_CACHE:
+        _PIN_CACHE[guild_id] = utils.load(guild_id, "pins.json")
+    return _PIN_CACHE[guild_id]
+
+
+def _save_pins(guild_id: str, pins: dict):
+    """pins.jsonを保存し、キャッシュも更新する"""
+    _PIN_CACHE[guild_id] = pins
+    utils.save(guild_id, "pins.json", pins)
+
 
 class PinUnsupportedContentError(Exception):
     """Webhookでは転送できない内容（スタンプのみ等）のメッセージを固定しようとした場合に投げる"""
@@ -32,11 +51,17 @@ def _get_lock(channel_id: int) -> asyncio.Lock:
 # ── Webhook ヘルパー ──────────────────────────────────────────────────────────
 
 async def _find_webhook(channel: discord.TextChannel, wh_id: str) -> discord.Webhook | None:
-    """チャンネルのWebhook一覧からIDで探す（from_urlのsession問題を回避）"""
+    """チャンネルのWebhook一覧からIDで探す（from_urlのsession問題を回避）。
+    キャッシュにあれば一覧取得APIを叩かずに済ませる"""
+    cached = _WEBHOOK_CACHE.get(channel.id)
+    if cached and str(cached.id) == wh_id:
+        return cached
+
     try:
         webhooks = await channel.webhooks()
         for wh in webhooks:
             if str(wh.id) == wh_id:
+                _WEBHOOK_CACHE[channel.id] = wh
                 return wh
     except (discord.NotFound, discord.Forbidden) as e:
         print(f"[pin] could not list webhooks in #{channel.name}: {e}")
@@ -49,7 +74,9 @@ async def _get_or_create_webhook(channel: discord.TextChannel, wh_id: str | None
         wh = await _find_webhook(channel, wh_id)
         if wh:
             return wh
-    return await channel.create_webhook(name=WEBHOOK_NAME)
+    wh = await channel.create_webhook(name=WEBHOOK_NAME)
+    _WEBHOOK_CACHE[channel.id] = wh
+    return wh
 
 
 async def _send_from_message(channel: discord.TextChannel, source: discord.Message,
@@ -71,6 +98,10 @@ async def _send_from_message(channel: discord.TextChannel, source: discord.Messa
             )
         raise PinUnsupportedContentError("固定できる内容（テキスト・添付・埋め込み）がありません。")
 
+    # 元メッセージの「埋め込みを抑制」状態をWebhook送信にも引き継ぐ（勝手に埋め込みが出るのを防ぐ）
+    flags = getattr(source, "flags", None)
+    suppress = bool(flags and getattr(flags, "suppress_embeds", False))
+
     sent = await webhook.send(
         content=content,
         username=source.author.display_name,
@@ -78,6 +109,8 @@ async def _send_from_message(channel: discord.TextChannel, source: discord.Messa
         files=files,
         embeds=source.embeds,
         allowed_mentions=discord.AllowedMentions.none(),
+        silent=True,  # 通知なし（ミュートメッセージ）で送信
+        suppress_embeds=suppress,
         wait=True,
     )
     return sent.id
@@ -110,14 +143,16 @@ async def _delete_webhook_safe(channel: discord.TextChannel, entry: dict):
         await wh.delete()
     except (discord.NotFound, discord.Forbidden) as e:
         print(f"[pin] webhook delete skipped: {e}")
+    finally:
+        _WEBHOOK_CACHE.pop(channel.id, None)
 
 
 async def _unpin(channel: discord.TextChannel, entry: dict, guild_id: str, ch_id: str):
     await _delete_webhook_safe(channel, entry)
-    pins = utils.load(guild_id, "pins.json")
+    pins = _get_pins(guild_id)
     if ch_id in pins:
         del pins[ch_id]
-        utils.save(guild_id, "pins.json", pins)
+        _save_pins(guild_id, pins)
 
 
 async def _resend_pin(channel: discord.TextChannel, guild_id: str, ch_id: str,
@@ -145,13 +180,13 @@ async def _resend_pin(channel: discord.TextChannel, guild_id: str, ch_id: str,
     # 送信が成功してから古いメッセージを消す（消す→送るの順だと送信失敗時に固定が消えたままになる）
     await _delete_pinned_message(channel, entry)
 
-    pins = utils.load(guild_id, "pins.json")
+    pins = _get_pins(guild_id)
     pins[ch_id] = {
         "source_message_id":  entry.get("source_message_id", str(source.id)),
         "current_message_id": str(new_msg_id),
         "webhook_id":          str(wh.id),
     }
-    utils.save(guild_id, "pins.json", pins)
+    _save_pins(guild_id, pins)
     return True
 
 
@@ -164,7 +199,7 @@ async def _debounced_resend(channel: discord.TextChannel, guild_id: str, ch_id: 
         return
 
     async with _get_lock(channel.id):
-        pins = utils.load(guild_id, "pins.json")
+        pins = _get_pins(guild_id)
         entry = pins.get(ch_id)
         if not entry:
             return
@@ -211,21 +246,21 @@ class PinOverwriteView(discord.ui.View):
                 wh = await _get_or_create_webhook(self.channel, None)
                 msg_id = await _send_from_message(self.channel, self.target, wh)
             except discord.Forbidden:
-                return await interaction.followup.send("Webhookの作成権限がありません。", ephemeral=True)
+                return await interaction.followup.send("Webhookの作成権限がありません。", ephemeral=True, silent=True)
             except PinUnsupportedContentError as e:
-                return await interaction.followup.send(str(e), ephemeral=True)
+                return await interaction.followup.send(str(e), ephemeral=True, silent=True)
             except Exception as e:
                 print(f"[pin] overwrite send failed: {e}")
-                return await interaction.followup.send("固定メッセージの送信に失敗しました。", ephemeral=True)
+                return await interaction.followup.send("固定メッセージの送信に失敗しました。", ephemeral=True, silent=True)
 
-            pins = utils.load(self.guild_id, "pins.json")
+            pins = _get_pins(self.guild_id)
             pins[self.ch_id] = {
                 "source_message_id":  str(self.target.id),
                 "current_message_id": str(msg_id),
                 "webhook_id":          str(wh.id),
             }
-            utils.save(self.guild_id, "pins.json", pins)
-        await interaction.followup.send("固定しました。", ephemeral=True)
+            _save_pins(self.guild_id, pins)
+        await interaction.followup.send("固定しました。", ephemeral=True, silent=True)
 
     @discord.ui.button(label="キャンセル", style=discord.ButtonStyle.secondary)
     async def cancel(self, button, interaction: discord.Interaction):
@@ -262,7 +297,7 @@ class PinSelect(discord.ui.View):
         ch_id = str(self.target.channel.id)
 
         async with _get_lock(self.target.channel.id):
-            pins = utils.load(guild_id, "pins.json")
+            pins = _get_pins(guild_id)
 
             if select.values[0] == "pin":
                 if ch_id in pins:
@@ -294,7 +329,7 @@ class PinSelect(discord.ui.View):
                     "current_message_id": str(msg_id),
                     "webhook_id":          str(wh.id),
                 }
-                utils.save(guild_id, "pins.json", pins)
+                _save_pins(guild_id, pins)
                 await interaction.response.edit_message(content="固定しました。", view=None)
             else:
                 if ch_id not in pins:
@@ -319,20 +354,22 @@ class Pin(commands.Cog):
         self.bot = bot
 
     @discord.message_command(name="メッセージを固定")
+    @discord.default_permissions(manage_messages=True)
     async def pin_menu(self, ctx: discord.ApplicationContext, message: discord.Message):
         view = PinSelect(message)
-        resp = await ctx.respond("操作を選択してください。", view=view, ephemeral=True)
+        resp = await ctx.respond("操作を選択してください。", view=view, ephemeral=True, silent=True)
         view.message = await resp.original_response() if hasattr(resp, "original_response") else None
 
     @discord.slash_command(description="現在固定中のメッセージ一覧を表示します")
+    @discord.default_permissions(manage_messages=True)
     async def pin_list(self, ctx: discord.ApplicationContext):
         await ctx.defer(ephemeral=True)
 
         guild_id = str(ctx.guild_id)
-        pins     = utils.load(guild_id, "pins.json")
+        pins     = _get_pins(guild_id)
 
         if not pins:
-            return await ctx.respond("現在固定されているメッセージはありません。", ephemeral=True)
+            return await ctx.respond("現在固定されているメッセージはありません。", ephemeral=True, silent=True)
 
         embed = discord.Embed(
             title="📌 固定メッセージ一覧",
@@ -355,7 +392,7 @@ class Pin(commands.Cog):
 
             embed.add_field(name=ch_name, value=content, inline=False)
 
-        await ctx.respond(embed=embed, ephemeral=True)
+        await ctx.respond(embed=embed, ephemeral=True, silent=True)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -367,7 +404,7 @@ class Pin(commands.Cog):
         guild_id = str(message.guild.id)
         ch_id = str(message.channel.id)
 
-        pins = utils.load(guild_id, "pins.json")
+        pins = _get_pins(guild_id)
         entry = pins.get(ch_id)
         if not entry:
             return
@@ -377,6 +414,56 @@ class Pin(commands.Cog):
             return
 
         _schedule_resend(message.channel, guild_id, ch_id)
+
+    @commands.Cog.listener()
+    async def on_message_edit(self, before: discord.Message, after: discord.Message):
+        """③編集同期：固定の元メッセージが編集されたら、固定メッセージにも内容を反映する。
+        （ルール固定・案内固定など、常に最新を保ちたい用途向け。雑談固定では誤爆しないよう
+        source_message_idが一致する場合のみ反映する）"""
+        if not after.guild or after.author.bot:
+            return
+
+        guild_id = str(after.guild.id)
+        ch_id = str(after.channel.id)
+
+        async with _get_lock(after.channel.id):
+            pins = _get_pins(guild_id)
+            entry = pins.get(ch_id)
+            if not entry or entry.get("source_message_id") != str(after.id):
+                return
+
+            wh = await _find_webhook(after.channel, entry.get("webhook_id"))
+            if wh is None:
+                return
+
+            try:
+                await wh.edit_message(
+                    int(entry["current_message_id"]),
+                    content=after.content or None,
+                    embeds=after.embeds,
+                )
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException) as e:
+                print(f"[pin] pinned message edit sync failed: {e}")
+
+    @commands.Cog.listener()
+    async def on_guild_channel_delete(self, channel):
+        """④ゴミ掃除：チャンネルが消えたら、そのチャンネルに紐づくpins.jsonの記録と
+        各種キャッシュを破棄する（JSON肥大・ゴーストデータ防止）"""
+        guild = getattr(channel, "guild", None)
+        if guild is None:
+            return
+
+        guild_id = str(guild.id)
+        ch_id = str(channel.id)
+
+        pins = _get_pins(guild_id)
+        if ch_id in pins:
+            del pins[ch_id]
+            _save_pins(guild_id, pins)
+
+        _WEBHOOK_CACHE.pop(channel.id, None)
+        _channel_locks.pop(channel.id, None)
+        _resend_tasks.pop(channel.id, None)
 
 
 def setup(bot):
