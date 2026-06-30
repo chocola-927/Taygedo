@@ -12,6 +12,11 @@ WEBHOOK_NAME = "Taygedo Pin"
 _channel_locks: dict[int, asyncio.Lock] = {}
 
 
+class PinUnsupportedContentError(Exception):
+    """Webhookでは転送できない内容（スタンプのみ等）のメッセージを固定しようとした場合に投げる"""
+    pass
+
+
 def _get_lock(channel_id: int) -> asyncio.Lock:
     lock = _channel_locks.get(channel_id)
     if lock is None:
@@ -29,8 +34,8 @@ async def _find_webhook(channel: discord.TextChannel, wh_id: str) -> discord.Web
         for wh in webhooks:
             if str(wh.id) == wh_id:
                 return wh
-    except (discord.NotFound, discord.Forbidden):
-        pass
+    except (discord.NotFound, discord.Forbidden) as e:
+        print(f"[pin] could not list webhooks in #{channel.name}: {e}")
     return None
 
 
@@ -53,6 +58,14 @@ async def _send_from_message(channel: discord.TextChannel, source: discord.Messa
             files.append(await att.to_file())
         except Exception as e:
             print(f"[pin] attachment fetch failed ({att.filename}): {e}")
+
+    if not content and not files and not source.embeds:
+        if source.stickers:
+            # Webhook送信はスタンプを転送できないため、専用のエラーで知らせる
+            raise PinUnsupportedContentError(
+                "スタンプのみのメッセージは固定できません（Webhookはスタンプを転送できません）。"
+            )
+        raise PinUnsupportedContentError("固定できる内容（テキスト・添付・埋め込み）がありません。")
 
     sent = await webhook.send(
         content=content,
@@ -82,13 +95,17 @@ async def _delete_webhook_safe(channel: discord.TextChannel, entry: dict):
     """固定解除時など、Webhookごと消したい場合に使う"""
     wh_id = entry.get("webhook_id")
     if not wh_id:
+        print("[pin] webhook delete skipped: entry has no webhook_id")
         return
     wh = await _find_webhook(channel, wh_id)
-    if wh:
-        try:
-            await wh.delete()
-        except (discord.NotFound, discord.Forbidden) as e:
-            print(f"[pin] webhook delete skipped: {e}")
+    if wh is None:
+        print(f"[pin] webhook delete skipped: webhook {wh_id} not found in #{channel.name} "
+              f"(already deleted manually, or webhooks() permission missing)")
+        return
+    try:
+        await wh.delete()
+    except (discord.NotFound, discord.Forbidden) as e:
+        print(f"[pin] webhook delete skipped: {e}")
 
 
 async def _unpin(channel: discord.TextChannel, entry: dict, guild_id: str, ch_id: str):
@@ -114,6 +131,9 @@ async def _resend_pin(channel: discord.TextChannel, guild_id: str, ch_id: str,
 
     try:
         new_msg_id = await _send_from_message(channel, source, wh)
+    except PinUnsupportedContentError as e:
+        print(f"[pin] resend skipped: {e}")
+        return False
     except Exception as e:
         print(f"[pin] resend failed (send): {e}")
         return False
@@ -153,6 +173,8 @@ class PinOverwriteView(discord.ui.View):
                 msg_id = await _send_from_message(self.channel, self.target, wh)
             except discord.Forbidden:
                 return await interaction.followup.send("Webhookの作成権限がありません。", ephemeral=True)
+            except PinUnsupportedContentError as e:
+                return await interaction.followup.send(str(e), ephemeral=True)
             except Exception as e:
                 print(f"[pin] overwrite send failed: {e}")
                 return await interaction.followup.send("固定メッセージの送信に失敗しました。", ephemeral=True)
@@ -222,6 +244,8 @@ class PinSelect(discord.ui.View):
                     msg_id = await _send_from_message(self.target.channel, self.target, wh)
                 except discord.Forbidden:
                     return await interaction.response.edit_message(content="Webhookの作成権限がありません。", view=None)
+                except PinUnsupportedContentError as e:
+                    return await interaction.response.edit_message(content=str(e), view=None)
                 except Exception as e:
                     print(f"[pin] new pin send failed: {e}")
                     return await interaction.response.edit_message(content="固定メッセージの送信に失敗しました。", view=None)
