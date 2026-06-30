@@ -1,5 +1,7 @@
 import asyncio
 import discord
+import aiohttp
+import json
 from discord.ext import commands
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -79,42 +81,90 @@ async def _get_or_create_webhook(channel: discord.TextChannel, wh_id: str | None
     return wh
 
 
-async def _send_from_message(channel: discord.TextChannel, source: discord.Message,
-                             webhook: discord.Webhook) -> int:
-    """既存のメッセージ（自分のWebhookメッセージ含む）の内容をそのまま再送信する"""
-    content = source.content or None
-    files = []
-    for att in source.attachments:
-        try:
-            files.append(await att.to_file())
-        except Exception as e:
-            print(f"[pin] attachment fetch failed ({att.filename}): {e}")
+async def _send_from_message(
+    channel: discord.TextChannel,
+    source: discord.Message,
+    webhook: discord.Webhook,
+) -> int:
+    """Webhook APIを直接叩いて通知なしで送信する"""
 
-    if not content and not files and not source.embeds:
+    content = source.content or None
+
+    if (
+        not content
+        and not source.attachments
+        and not source.embeds
+    ):
         if source.stickers:
-            # Webhook送信はスタンプを転送できないため、専用のエラーで知らせる
             raise PinUnsupportedContentError(
                 "スタンプのみのメッセージは固定できません（Webhookはスタンプを転送できません）。"
             )
-        raise PinUnsupportedContentError("固定できる内容（テキスト・添付・埋め込み）がありません。")
+        raise PinUnsupportedContentError(
+            "固定できる内容（テキスト・添付・埋め込み）がありません。"
+        )
 
-    # 元メッセージの「埋め込みを抑制」状態をWebhook送信にも引き継ぐ（勝手に埋め込みが出るのを防ぐ）
     flags = getattr(source, "flags", None)
     suppress = bool(flags and getattr(flags, "suppress_embeds", False))
 
-    sent = await webhook.send(
-        content=content,
-        username=source.author.display_name,
-        avatar_url=source.author.display_avatar.url,
-        files=files,
-        embeds=source.embeds,
-        allowed_mentions=discord.AllowedMentions.none(),
-        silent=True,  # 通知なし（ミュートメッセージ）で送信
-        suppress_embeds=suppress,
-        wait=True,
-    )
-    return sent.id
+    payload = {
+        "content": content,
+        "username": source.author.display_name,
+        "avatar_url": source.author.display_avatar.url,
+        "allowed_mentions": {
+            "parse": []
+        },
+        "flags": 4096,
+    }
 
+    if source.embeds:
+        payload["embeds"] = [e.to_dict() for e in source.embeds]
+
+    if suppress:
+        payload["flags"] |= 4   # SUPPRESS_EMBEDS
+
+    form = aiohttp.FormData()
+
+    form.add_field(
+        "payload_json",
+        json.dumps(payload),
+        content_type="application/json",
+    )
+
+    for i, att in enumerate(source.attachments):
+        try:
+            data = await att.read()
+
+            form.add_field(
+                f"files[{i}]",
+                data,
+                filename=att.filename,
+                content_type=att.content_type or "application/octet-stream",
+            )
+
+        except Exception as e:
+            print(f"[pin] attachment fetch failed ({att.filename}): {e}")
+
+    print(f"[pin] webhook.id={webhook.id}")
+    print(f"[pin] webhook.token={webhook.token!r}")
+
+    url = (
+        f"https://discord.com/api/v10/webhooks/"
+        f"{webhook.id}/{webhook.token}"
+        "?wait=true"
+    )
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, data=form) as resp:
+
+            if resp.status >= 400:
+                text = await resp.text()
+                raise RuntimeError(
+                    f"Webhook API {resp.status}: {text}"
+                )
+
+            data = await resp.json()
+
+    return int(data["id"])
 
 async def _delete_pinned_message(channel: discord.TextChannel, entry: dict):
     """固定メッセージ自体だけを削除する（Webhookは削除しない）"""
