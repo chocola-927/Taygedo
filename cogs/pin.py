@@ -246,12 +246,12 @@ class PinOverwriteView(discord.ui.View):
                 wh = await _get_or_create_webhook(self.channel, None)
                 msg_id = await _send_from_message(self.channel, self.target, wh)
             except discord.Forbidden:
-                return await interaction.followup.send("Webhookの作成権限がありません。", ephemeral=True, silent=True)
+                return await interaction.followup.send("Webhookの作成権限がありません。", ephemeral=True)
             except PinUnsupportedContentError as e:
-                return await interaction.followup.send(str(e), ephemeral=True, silent=True)
+                return await interaction.followup.send(str(e), ephemeral=True)
             except Exception as e:
                 print(f"[pin] overwrite send failed: {e}")
-                return await interaction.followup.send("固定メッセージの送信に失敗しました。", ephemeral=True, silent=True)
+                return await interaction.followup.send("固定メッセージの送信に失敗しました。", ephemeral=True)
 
             pins = _get_pins(self.guild_id)
             pins[self.ch_id] = {
@@ -260,7 +260,7 @@ class PinOverwriteView(discord.ui.View):
                 "webhook_id":          str(wh.id),
             }
             _save_pins(self.guild_id, pins)
-        await interaction.followup.send("固定しました。", ephemeral=True, silent=True)
+        await interaction.followup.send("固定しました。", ephemeral=True)
 
     @discord.ui.button(label="キャンセル", style=discord.ButtonStyle.secondary)
     async def cancel(self, button, interaction: discord.Interaction):
@@ -357,7 +357,7 @@ class Pin(commands.Cog):
     @discord.default_permissions(manage_messages=True)
     async def pin_menu(self, ctx: discord.ApplicationContext, message: discord.Message):
         view = PinSelect(message)
-        resp = await ctx.respond("操作を選択してください。", view=view, ephemeral=True, silent=True)
+        resp = await ctx.respond("操作を選択してください。", view=view, ephemeral=True)
         view.message = await resp.original_response() if hasattr(resp, "original_response") else None
 
     @discord.slash_command(description="現在固定中のメッセージ一覧を表示します")
@@ -369,7 +369,7 @@ class Pin(commands.Cog):
         pins     = _get_pins(guild_id)
 
         if not pins:
-            return await ctx.respond("現在固定されているメッセージはありません。", ephemeral=True, silent=True)
+            return await ctx.respond("現在固定されているメッセージはありません。", ephemeral=True)
 
         embed = discord.Embed(
             title="📌 固定メッセージ一覧",
@@ -392,7 +392,7 @@ class Pin(commands.Cog):
 
             embed.add_field(name=ch_name, value=content, inline=False)
 
-        await ctx.respond(embed=embed, ephemeral=True, silent=True)
+        await ctx.respond(embed=embed, ephemeral=True)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
