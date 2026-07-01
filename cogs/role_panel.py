@@ -1,3 +1,4 @@
+import asyncio
 import discord
 from discord.ext import commands
 import re, sys, os
@@ -7,23 +8,29 @@ import utils
 
 # ── 絵文字抽出ヘルパー ────────────────────────────────────────────────────────
 
-def _extract_emoji(label: str) -> tuple[str | None, str]:
-    """ラベル先頭の絵文字を抽出して (emoji, text) を返す"""
+def _extract_emoji(label: str) -> tuple[str | None, str | None]:
+    """ラベル先頭の絵文字を抽出して (emoji, text) を返す。
+    labelが絵文字のみの場合は text=None を返す（役割の重複を避けるため）。
+    """
+    label = label.strip()
+
     # Unicodeカスタム絵文字 <:name:id> or <a:name:id>
-    m = re.match(r"^(<a?:\w+:\d+>)\s*(.*)$", label.strip())
+    m = re.match(r"^(<a?:\w+:\d+>)\s*(.*)$", label)
     if m:
-        return m.group(1), m.group(2).strip() or m.group(1)
+        rest = m.group(2).strip()
+        return m.group(1), (rest or None)
 
     # Unicode絵文字（1〜2文字）
     m = re.match(
         r"^([\U0001F000-\U0001FFFF]|[\U00002600-\U000027BF]|"
         r"[\U0001F300-\U0001F9FF][\uFE0F]?)\s*(.*)$",
-        label.strip()
+        label
     )
     if m:
-        return m.group(1), m.group(2).strip() or m.group(1)
+        rest = m.group(2).strip()
+        return m.group(1), (rest or None)
 
-    return None, label.strip()
+    return None, (label or None)
 
 
 # ── ボタンスタイル変換 ─────────────────────────────────────────────────────────
@@ -34,6 +41,49 @@ STYLE_MAP = {
     "赤": discord.ButtonStyle.danger,
     "グレー": discord.ButtonStyle.secondary,
 }
+
+
+# ── Embed説明文の組み立て ─────────────────────────────────────────────────────
+
+def _build_description(guild: discord.Guild, base: str | None, buttons: list[dict]) -> str | None:
+    """パネル作成時の説明文(base) + 現在登録されているロール一覧、を結合して返す"""
+    lines = []
+    if base:
+        lines.append(base)
+
+    role_lines = []
+    for b in buttons:
+        role = guild.get_role(b["role_id"])
+        if not role:
+            # 削除済みロールは一覧から静かに除外
+            continue
+        parts = []
+        if b.get("emoji"):
+            parts.append(b["emoji"])
+        if b.get("custom_label"):
+            parts.append(b["custom_label"])
+        parts.append(role.mention)
+        role_lines.append("・" + " ".join(parts))
+
+    if role_lines:
+        if lines:
+            lines.append("")
+        lines.append("**受け取れるロール**")
+        lines.extend(role_lines)
+
+    return "\n".join(lines) if lines else None
+
+
+def _build_button_label(guild: discord.Guild, b: dict) -> str | None:
+    """ボタン表示用のラベルを組み立てる。ロールが見つからない場合はNoneを返す"""
+    role = guild.get_role(b["role_id"])
+    if not role:
+        return None
+    if b.get("custom_label"):
+        text = f'{b["custom_label"]} {role.name}'
+    else:
+        text = role.name
+    return text[:80]  # discordのボタンラベル上限
 
 
 # ── ロールボタン ──────────────────────────────────────────────────────────────
@@ -55,25 +105,35 @@ class RoleButton(discord.ui.Button):
             return await interaction.response.send_message(
                 "ロールが見つかりません。", ephemeral=True)
 
-        if role in interaction.user.roles:
-            await interaction.user.remove_roles(role)
+        try:
+            if role in interaction.user.roles:
+                await interaction.user.remove_roles(role)
+                await interaction.response.send_message(
+                    f"🗑️ **{role.name}** を外しました。", ephemeral=True)
+            else:
+                await interaction.user.add_roles(role)
+                await interaction.response.send_message(
+                    f"✅ **{role.name}** を付与しました。", ephemeral=True)
+        except discord.Forbidden:
             await interaction.response.send_message(
-                f"🗑️ **{role.name}** を外しました。", ephemeral=True)
-        else:
-            await interaction.user.add_roles(role)
-            await interaction.response.send_message(
-                f"✅ **{role.name}** を付与しました。", ephemeral=True)
+                "⚠️ 権限不足のためロールを変更できませんでした。"
+                "Botのロール順位がこのロールより上にあるか確認してください。",
+                ephemeral=True)
 
 
 # ── パネルView ────────────────────────────────────────────────────────────────
 
 class RolePanelView(discord.ui.View):
-    def __init__(self, buttons: list[dict]):
+    def __init__(self, guild: discord.Guild, buttons: list[dict]):
         super().__init__(timeout=None)
         for b in buttons:
+            label = _build_button_label(guild, b)
+            if label is None:
+                # ロールが削除済みなどで解決できない場合はボタンごと表示しない
+                continue
             self.add_item(RoleButton(
                 role_id=b["role_id"],
-                label=b["label"],
+                label=label,
                 emoji=b.get("emoji"),
                 style=STYLE_MAP.get(b.get("color", "青"), discord.ButtonStyle.primary),
             ))
@@ -118,9 +178,10 @@ class RolePanelModal(discord.ui.Modal):
         msg = await self.channel.send(embed=embed)
 
         panels[title] = {
-            "message_id": str(msg.id),
-            "channel_id": str(self.channel.id),
-            "buttons":    [],
+            "message_id":  str(msg.id),
+            "channel_id":  str(self.channel.id),
+            "description": description,   # ロール一覧を除いた元の説明文（再生成の基点）
+            "buttons":     [],
         }
         utils.save(self.guild_id, "role_panels.json", panels)
 
@@ -136,16 +197,114 @@ class RolePanel(commands.Cog):
         self.bot = bot
 
     async def cog_load(self):
-        """Bot起動時にPersistent Viewを復元"""
+        """Bot起動時にPersistent Viewを復元しつつ、消えているパネルを掃除する"""
         for guild in self.bot.guilds:
             guild_id = str(guild.id)
             panels   = utils.load(guild_id, "role_panels.json")
-            for title, data in panels.items():
+            changed  = False
+
+            for title, data in list(panels.items()):
+                channel = guild.get_channel(int(data["channel_id"]))
+                if not channel:
+                    # キャッシュに無い＝「削除された」か「権限的に見えていないだけ」の
+                    # どちらか判別できないので、APIに直接問い合わせて確定させる
+                    try:
+                        channel = await self.bot.fetch_channel(int(data["channel_id"]))
+                    except discord.NotFound:
+                        # 本当に存在しない → JSONのゴミを掃除
+                        del panels[title]
+                        changed = True
+                        continue
+                    except discord.Forbidden:
+                        # 存在はするが閲覧権限がない → 削除しない
+                        continue
+                    except discord.HTTPException:
+                        continue
+
+                try:
+                    msg = await channel.fetch_message(int(data["message_id"]))
+                except discord.NotFound:
+                    # メッセージが実際に存在しない → JSONのゴミを掃除
+                    del panels[title]
+                    changed = True
+                    continue
+                except discord.Forbidden:
+                    # 閲覧権限がないだけかもしれないので削除しない
+                    continue
+                except discord.HTTPException:
+                    continue
+
                 if data.get("buttons"):
-                    self.bot.add_view(
-                        RolePanelView(data["buttons"]),
-                        message_id=int(data["message_id"]),
-                    )
+                    view = RolePanelView(guild, data["buttons"])
+                    self.bot.add_view(view, message_id=msg.id)
+
+                await asyncio.sleep(0.5)  # レート制限対策
+
+            if changed:
+                utils.save(guild_id, "role_panels.json", panels)
+
+    async def _refresh_panel_message(self, guild: discord.Guild, title: str, data: dict) -> bool:
+        """パネルのEmbed/Viewを現在のbuttons内容で再描画する。成功したらTrue"""
+        channel = guild.get_channel(int(data["channel_id"]))
+        if not channel:
+            return False
+
+        try:
+            msg = await channel.fetch_message(int(data["message_id"]))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return False
+
+        embed = discord.Embed(
+            title=title,
+            description=_build_description(guild, data.get("description"), data["buttons"]),
+            color=0x5865F2,
+        )
+        view = RolePanelView(guild, data["buttons"])
+        self.bot.add_view(view, message_id=msg.id)
+
+        try:
+            await msg.edit(embed=embed, view=view)
+        except discord.HTTPException:
+            return False
+
+        return True
+
+    @commands.Cog.listener()
+    async def on_guild_role_delete(self, role: discord.Role):
+        """ロールが削除されたら、パネル内の対応ボタンをJSONごと消してメッセージを更新する"""
+        guild    = role.guild
+        guild_id = str(guild.id)
+        panels   = utils.load(guild_id, "role_panels.json")
+        changed  = False
+
+        for title, data in panels.items():
+            before = len(data["buttons"])
+            data["buttons"] = [b for b in data["buttons"] if b["role_id"] != role.id]
+            if len(data["buttons"]) != before:
+                changed = True
+                await self._refresh_panel_message(guild, title, data)
+
+        if changed:
+            utils.save(guild_id, "role_panels.json", panels)
+
+    @commands.Cog.listener()
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent):
+        """パネルメッセージが手動削除されたら、対応するJSONエントリを自動削除する"""
+        if not payload.guild_id:
+            return
+
+        guild_id = str(payload.guild_id)
+        panels   = utils.load(guild_id, "role_panels.json")
+
+        target_title = None
+        for title, data in panels.items():
+            if str(data.get("message_id")) == str(payload.message_id):
+                target_title = title
+                break
+
+        if target_title:
+            del panels[target_title]
+            utils.save(guild_id, "role_panels.json", panels)
 
     @discord.slash_command(description="ロールパネルを設置します")
     @discord.default_permissions(administrator=True)
@@ -158,7 +317,8 @@ class RolePanel(commands.Cog):
     async def add_role(self, ctx: discord.ApplicationContext,
                        title: discord.Option(str, "対象パネルのタイトル"),
                        role: discord.Option(discord.Role, "付与・剥奪するロール"),
-                       label: discord.Option(str, "ボタンのラベル（先頭に絵文字可）"),
+                       label: discord.Option(str, "ボタンの追加ラベル（任意・先頭に絵文字可／ロール名は自動で付きます）",
+                                             required=False, default=None),
                        color: discord.Option(str, "ボタンの色",
                                              choices=["青", "緑", "赤", "グレー"],
                                              default="青")):
@@ -182,60 +342,43 @@ class RolePanel(commands.Cog):
             return await ctx.respond(
                 f"**{role.name}** はすでにこのパネルに登録されています。", ephemeral=True)
 
-        # 絵文字抽出
-        emoji, text = _extract_emoji(label)
+        # 付与不可能なロールを弾く
+        if role.is_default():
+            return await ctx.respond(
+                "@everyone ロールは登録できません。", ephemeral=True)
+        if role.managed:
+            return await ctx.respond(
+                f"**{role.name}** はBotや連携サービスが管理するロールのため登録できません。",
+                ephemeral=True)
+        if role >= ctx.guild.me.top_role:
+            return await ctx.respond(
+                f"**{role.name}** はBotのロールと同格か、それより上位に設定されているため"
+                "付与・剥奪できません。ロール順を確認してください。",
+                ephemeral=True)
+
+        # 絵文字・カスタムラベル抽出
+        emoji, custom_label = (None, None)
+        if label:
+            emoji, custom_label = _extract_emoji(label)
 
         # ボタン情報を保存
         data["buttons"].append({
-            "role_id": role.id,
-            "label":   text,
-            "emoji":   emoji,
-            "color":   color,
+            "role_id":      role.id,
+            "custom_label": custom_label,
+            "emoji":        emoji,
+            "color":        color,
         })
         utils.save(guild_id, "role_panels.json", panels)
 
         # パネルメッセージを更新
-        ch = ctx.guild.get_channel(int(data["channel_id"]))
-        if not ch:
-            return await ctx.respond("チャンネルが見つかりません。", ephemeral=True)
-
-        try:
-            msg = await ch.fetch_message(int(data["message_id"]))
-        except discord.NotFound:
-            return await ctx.respond("パネルメッセージが見つかりません。", ephemeral=True)
-
-        view = RolePanelView(data["buttons"])
-        self.bot.add_view(view, message_id=msg.id)
-        await msg.edit(view=view)
+        ok = await self._refresh_panel_message(ctx.guild, title, data)
+        if not ok:
+            return await ctx.respond(
+                "パネルメッセージの更新に失敗しました（チャンネル/メッセージが見つからないか、権限不足です）。",
+                ephemeral=True)
 
         await ctx.respond(
             f"「{title}」に **{role.name}** のボタンを追加しました。", ephemeral=True)
-
-    @discord.slash_command(description="ロールパネルを削除します")
-    @discord.default_permissions(administrator=True)
-    async def delete_role_panel(self, ctx: discord.ApplicationContext,
-                                title: discord.Option(str, "削除するパネルのタイトル")):
-        await ctx.defer(ephemeral=True)
-
-        guild_id = str(ctx.guild_id)
-        panels   = utils.load(guild_id, "role_panels.json")
-
-        if title not in panels:
-            return await ctx.respond(
-                f"「{title}」というパネルが見つかりません。", ephemeral=True)
-
-        data = panels[title]
-        ch   = ctx.guild.get_channel(int(data["channel_id"]))
-        if ch:
-            try:
-                msg = await ch.fetch_message(int(data["message_id"]))
-                await msg.delete()
-            except discord.NotFound:
-                pass
-
-        del panels[title]
-        utils.save(guild_id, "role_panels.json", panels)
-        await ctx.respond(f"パネル「{title}」を削除しました。", ephemeral=True)
 
 
 def setup(bot):

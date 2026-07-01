@@ -144,9 +144,6 @@ async def _send_from_message(
         except Exception as e:
             print(f"[pin] attachment fetch failed ({att.filename}): {e}")
 
-    print(f"[pin] webhook.id={webhook.id}")
-    print(f"[pin] webhook.token={webhook.token!r}")
-
     url = (
         f"https://discord.com/api/v10/webhooks/"
         f"{webhook.id}/{webhook.token}"
