@@ -198,6 +198,10 @@ class RolePanel(commands.Cog):
 
     async def cog_load(self):
         """Bot起動時にPersistent Viewを復元しつつ、消えているパネルを掃除する"""
+        # cog_loadはゲートウェイ接続(guildsキャッシュ構築)より先に走ることがあるため、
+        # ここで接続完了を待たないとself.bot.guildsが空のまま素通りしてしまう
+        await self.bot.wait_until_ready()
+
         for guild in self.bot.guilds:
             guild_id = str(guild.id)
             panels   = utils.load(guild_id, "role_panels.json")
