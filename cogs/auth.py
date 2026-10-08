@@ -111,16 +111,37 @@ class Auth(commands.Cog):
         bot.add_view(AuthCalcView())
 
     @discord.slash_command(description="認証パネルを設置します")
-    @discord.default_permissions(administrator=True)
-    async def auth_panel(self, ctx: discord.ApplicationContext,
-                         role: discord.Option(discord.Role, "認証後に付与するロール"),
-                         kind: discord.Option(str, "認証の種類",
-                                              choices=["ボタン式", "計算式"]),
-                         title: discord.Option(str, "Embedのタイトル",
-                                               default="認証"),
-                         description: discord.Option(str, "Embedの説明",
-                                                     default="下のボタンを押して認証してください。")):
-        await ctx.defer(ephemeral=True)
+@discord.default_permissions(manage_roles=True)
+async def auth_panel(self, ctx: discord.ApplicationContext,
+                     role: discord.Option(discord.Role, "認証後に付与するロール"),
+                     kind: discord.Option(str, "認証の種類", choices=["ボタン式", "計算式"]),
+                     title: discord.Option(str, "Embedのタイトル", default="認証"),
+                     description: discord.Option(str, "Embedの説明",
+                                                 default="下のボタンを押して認証してください。")):
+    me = ctx.guild.me
+
+    # 実行者の権限(上書きされても守れるよう実行時にも確認)
+    if not ctx.author.guild_permissions.manage_roles:
+        return await ctx.respond("このコマンドには「ロールの管理」権限が必要です。", ephemeral=True)
+
+    # Bot側の権限
+    ch_perms = ctx.channel.permissions_for(me)
+    missing = []
+    if not me.guild_permissions.manage_roles: missing.append("ロールの管理")
+    if not ch_perms.send_messages:            missing.append("メッセージを送信")
+    if not ch_perms.embed_links:              missing.append("埋め込みリンク")
+    if missing:
+        return await ctx.respond(f"Botに次の権限が不足しています: {', '.join(missing)}", ephemeral=True)
+
+    # ロールの上下関係
+    if role.is_default() or role.managed:
+        return await ctx.respond("このロールは付与できません。", ephemeral=True)
+    if role >= me.top_role:
+        return await ctx.respond("Botの最上位ロールより上のロールは付与できません。", ephemeral=True)
+    if ctx.author != ctx.guild.owner and role >= ctx.author.top_role:
+        return await ctx.respond("あなたの最上位ロール以上のロールは指定できません。", ephemeral=True)
+
+    await ctx.defer(ephemeral=True)
 
         guild_id = str(ctx.guild_id)
         cfg      = utils.load(guild_id, "config.json")
